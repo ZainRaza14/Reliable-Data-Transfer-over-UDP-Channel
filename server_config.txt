@@ -1,0 +1,6 @@
+Server IP:127.0.0.1
+Server Port:4000
+File Name:DataGot.txt
+Packet Size:200
+Packet number to drop:19
+Packet number to corrupt:25

@@ -1,0 +1,576 @@
+
+/******************************************************************************/
+
+/* CRC Model Abstract Type */
+/* ----------------------- */
+/* The following type stores the context of an executing instance of the  */
+/* model algorithm. Most of the fields are model parameters which must be */
+/* set before the first initializing call to cm_ini.                      */
+typedef struct
+  {
+   int   cm_width;   /* Parameter: Width in bits [8,32].       */
+   ulong cm_poly;    /* Parameter: The algorithm's polynomial. */
+   ulong cm_init;    /* Parameter: Initial register value.     */
+   bool  cm_refin;   /* Parameter: Reflect input bytes?        */
+   bool  cm_refot;   /* Parameter: Reflect output CRC?         */
+   ulong cm_xorot;   /* Parameter: XOR this to output CRC.     */
+
+   ulong cm_reg;     /* Context: Context during execution.     */
+  } cm_t;
+typedef cm_t *p_cm_t;
+
+/******************************************************************************/
+
+/* Functions That Implement The Model */
+/* ---------------------------------- */
+/* The following functions animate the cm_t abstraction. */
+
+void cm_ini P_((p_cm_t p_cm));
+/* Initializes the argument CRC model instance.          */
+/* All parameter fields must be set before calling this. */
+
+void cm_nxt P_((p_cm_t p_cm,int ch));
+/* Processes a single message byte [0,255]. */
+
+void cm_blk P_((p_cm_t p_cm,p_ubyte_ blk_adr,ulong blk_len));
+/* Processes a block of message bytes. */
+
+ulong cm_crc P_((p_cm_t p_cm));
+/* Returns the CRC value for the message bytes processed so far. */
+
+/******************************************************************************/
+
+/* Functions For Table Calculation */
+/* ------------------------------- */
+/* The following function can be used to calculate a CRC lookup table.        */
+/* It can also be used at run-time to create or check static tables.          */
+
+ulong cm_tab P_((p_cm_t p_cm,int index));
+/* Returns the i'th entry for the lookup table for the specified algorithm.   */
+/* The function examines the fields cm_width, cm_poly, cm_refin, and the      */
+/* argument table index in the range [0,255] and returns the table entry in   */
+/* the bottom cm_width bytes of the return value.                             */
+
+/******************************************************************************/
+
+/* End of the header file idempotence #ifndef */
+#endif
+
+/******************************************************************************/
+/*                             End of crcmodel.h                              */
+/******************************************************************************/
+
+
+/******************************************************************************/
+/*                             Start of crcmodel.c                            */
+/******************************************************************************/
+/*                                                                            */
+/* Author : Ross Williams (ross@guest.adelaide.edu.au.).                      */
+/* Date   : 3 June 1993.                                                      */
+/* Status : Public domain.                                                    */
+/*                                                                            */
+/* Description : This is the implementation (.c) file for the reference       */
+/* implementation of the Rocksoft^tm Model CRC Algorithm. For more            */
+/* information on the Rocksoft^tm Model CRC Algorithm, see the document       */
+/* titled "A Painless Guide to CRC Error Detection Algorithms" by Ross        */
+/* Williams (ross@guest.adelaide.edu.au.). This document is likely to be in   */
+/* "ftp.adelaide.edu.au/pub/rocksoft".                                        */
+/*                                                                            */
+/* Note: Rocksoft is a trademark of Rocksoft Pty Ltd, Adelaide, Australia.    */
+/*                                                                            */
+/******************************************************************************/
+/*                                                                            */
+/* Implementation Notes                                                       */
+/* --------------------                                                       */
+/* To avoid inconsistencies, the specification of each function is not echoed */
+/* here. See the header file for a description of these functions.            */
+/* This package is light on checking because I want to keep it short and      */
+/* simple and portable (i.e. it would be too messy to distribute my entire    */
+/* C culture (e.g. assertions package) with this package.                     */
+/*                                                                            */
+/******************************************************************************/
+
+#include "crcmodel.h"
+
+/******************************************************************************/
+
+/* The following definitions make the code more readable. */
+
+#define BITMASK(X) (1L << (X))
+#define MASK32 0xFFFFFFFFL
+#define LOCAL static
+
+/******************************************************************************/
+
+LOCAL ulong reflect P_((ulong v,int b));
+LOCAL ulong reflect (v,b)
+/* Returns the value v with the bottom b [0,32] bits reflected. */
+/* Example: reflect(0x3e23L,3) == 0x3e26                        */
+ulong v;
+int   b;
+{
+ int   i;
+ ulong t = v;
+ for (i=0; i<b; i++)
+   {
+    if (t & 1L)
+       v|=  BITMASK((b-1)-i);
+    else
+       v&= ~BITMASK((b-1)-i);
+    t>>=1;
+   }
+ return v;
+}
+
+/******************************************************************************/
+
+LOCAL ulong widmask P_((p_cm_t));
+LOCAL ulong widmask (p_cm)
+/* Returns a longword whose value is (2^p_cm->cm_width)-1.     */
+/* The trick is to do this portably (e.g. without doing <<32). */
+p_cm_t p_cm;
+{
+ return (((1L<<(p_cm->cm_width-1))-1L)<<1)|1L;
+}
+
+/******************************************************************************/
+
+void cm_ini (p_cm)
+p_cm_t p_cm;
+{
+ p_cm->cm_reg = p_cm->cm_init;
+}
+
+/******************************************************************************/
+
+void cm_nxt (p_cm,ch)
+p_cm_t p_cm;
+int    ch;
+{
+ int   i;
+ ulong uch  = (ulong) ch;
+ ulong topbit = BITMASK(p_cm->cm_width-1);
+
+ if (p_cm->cm_refin) uch = reflect(uch,8);
+ p_cm->cm_reg ^= (uch << (p_cm->cm_width-8));
+ for (i=0; i<8; i++)
+   {
+    if (p_cm->cm_reg & topbit)
+       p_cm->cm_reg = (p_cm->cm_reg << 1) ^ p_cm->cm_poly;
+    else
+       p_cm->cm_reg <<= 1;
+    p_cm->cm_reg &= widmask(p_cm);
+   }
+}
+
+/******************************************************************************/
+
+void cm_blk (p_cm,blk_adr,blk_len)
+p_cm_t   p_cm;
+p_ubyte_ blk_adr;
+ulong    blk_len;
+{
+ while (blk_len--) cm_nxt(p_cm,*blk_adr++);
+}
+
+/******************************************************************************/
+
+ulong cm_crc (p_cm)
+p_cm_t p_cm;
+{
+ if (p_cm->cm_refot)
+    return p_cm->cm_xorot ^ reflect(p_cm->cm_reg,p_cm->cm_width);
+ else
+    return p_cm->cm_xorot ^ p_cm->cm_reg;
+}
+
+/******************************************************************************/
+
+ulong cm_tab (p_cm,index)
+p_cm_t p_cm;
+int    index;
+{
+ int   i;
+ ulong r;
+ ulong topbit = BITMASK(p_cm->cm_width-1);
+ ulong inbyte = (ulong) index;
+
+ if (p_cm->cm_refin) inbyte = reflect(inbyte,8);
+ r = inbyte << (p_cm->cm_width-8);
+ for (i=0; i<8; i++)
+    if (r & topbit)
+       r = (r << 1) ^ p_cm->cm_poly;
+    else
+       r<<=1;
+ if (p_cm->cm_refin) r = reflect(r,p_cm->cm_width);
+ return r & widmask(p_cm);
+}
+
+/******************************************************************************/
+/*                             End of crcmodel.c                              */
+/******************************************************************************/
+
+
+18. Roll Your Own Table-Driven Implementation
+---------------------------------------------
+Despite all the fuss I've made about understanding and defining CRC
+algorithms, the mechanics of their high-speed implementation remains
+trivial. There are really only two forms: normal and reflected. Normal
+shifts to the left and covers the case of algorithms with Refin=FALSE
+and Refot=FALSE. Reflected shifts to the right and covers algorithms
+with both those parameters true. (If you want one parameter true and
+the other false, you'll have to figure it out for yourself!) The
+polynomial is embedded in the lookup table (to be discussed). The
+other parameters, Init and XorOt can be coded as macros. Here is the
+32-bit normal form (the 16-bit form is similar).
+
+   unsigned long crc_normal ();
+   unsigned long crc_normal (blk_adr,blk_len)
+   unsigned char *blk_adr;
+   unsigned long  blk_len;
+   {
+    unsigned long crc = INIT;
+    while (blk_len--)
+       crc = crctable[((crc>>24) ^ *blk_adr++) & 0xFFL] ^ (crc << 8);
+    return crc ^ XOROT;
+   }
+
+Here is the reflected form:
+
+   unsigned long crc_reflected ();
+   unsigned long crc_reflected (blk_adr,blk_len)
+   unsigned char *blk_adr;
+   unsigned long  blk_len;
+   {
+    unsigned long crc = INIT_REFLECTED;
+    while (blk_len--)
+       crc = crctable[(crc ^ *blk_adr++) & 0xFFL] ^ (crc >> 8));
+    return crc ^ XOROT;
+   }
+
+Note: I have carefully checked the above two code fragments, but I
+haven't actually compiled or tested them. This shouldn't matter to
+you, as, no matter WHAT you code, you will always be able to tell if
+you have got it right by running whatever you have created against the
+reference model given earlier. The code fragments above are really
+just a rough guide. The reference model is the definitive guide.
+
+Note: If you don't care much about speed, just use the reference model
+code!
+
+
+19. Generating A Lookup Table
+-----------------------------
+The only component missing from the normal and reversed code fragments
+in the previous section is the lookup table. The lookup table can be
+computed at run time using the cm_tab function of the model package
+given earlier, or can be pre-computed and inserted into the C program.
+In either case, it should be noted that the lookup table depends only
+on the POLY and RefIn (and RefOt) parameters. Basically, the
+polynomial determines the table, but you can generate a reflected
+table too if you want to use the reflected form above.
+
+The following program generates any desired 16-bit or 32-bit lookup
+table. Skip to the word "Summary" if you want to skip over this code.
+
+
+
+/******************************************************************************/
+/*                             Start of crctable.c                            */
+/******************************************************************************/
+/*                                                                            */
+/* Author  : Ross Williams (ross@guest.adelaide.edu.au.).                     */
+/* Date    : 3 June 1993.                                                     */
+/* Version : 1.0.                                                             */
+/* Status  : Public domain.                                                   */
+/*                                                                            */
+/* Description : This program writes a CRC lookup table (suitable for         */
+/* inclusion in a C program) to a designated output file. The program can be  */
+/* statically configured to produce any table covered by the Rocksoft^tm      */
+/* Model CRC Algorithm. For more information on the Rocksoft^tm Model CRC     */
+/* Algorithm, see the document titled "A Painless Guide to CRC Error          */
+/* Detection Algorithms" by Ross Williams (ross@guest.adelaide.edu.au.). This */
+/* document is likely to be in "ftp.adelaide.edu.au/pub/rocksoft".            */
+/*                                                                            */
+/* Note: Rocksoft is a trademark of Rocksoft Pty Ltd, Adelaide, Australia.    */
+/*                                                                            */
+/******************************************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include "crcmodel.h"
+
+/******************************************************************************/
+
+/* TABLE PARAMETERS                                                           */
+/* ================                                                           */
+/* The following parameters entirely determine the table to be generated. You */
+/* should need to modify only the definitions in this section before running  */
+/* this program.                                                              */
+/*                                                                            */
+/*    TB_FILE  is the name of the output file.                                */
+/*    TB_WIDTH is the table width in bytes (either 2 or 4).                   */
+/*    TB_POLY  is the "polynomial", which must be TB_WIDTH bytes wide.        */
+/*    TB_REVER indicates whether the table is to be reversed (reflected).     */
+/*                                                                            */
+/* Example:                                                                   */
+/*                                                                            */
+/*    #define TB_FILE   "crctable.out"                                        */
+/*    #define TB_WIDTH  2                                                     */
+/*    #define TB_POLY   0x8005L                                               */
+/*    #define TB_REVER  TRUE                                                  */
+
+#define TB_FILE   "crctable.out"
+#define TB_WIDTH  4
+#define TB_POLY   0x04C11DB7L
+#define TB_REVER  TRUE
+
+/******************************************************************************/
+
+/* Miscellaneous definitions. */
+
+#define LOCAL static
+FILE *outfile;
+#define WR(X) fprintf(outfile,(X))
+#define WP(X,Y) fprintf(outfile,(X),(Y))
+
+/******************************************************************************/
+
+LOCAL void chk_err P_((char *));
+LOCAL void chk_err (mess)
+/* If mess is non-empty, write it out and abort. Otherwise, check the error   */
+/* status of outfile and abort if an error has occurred.                      */
+char *mess;
+{
+ if (mess[0] != 0   ) {printf("%s\n",mess); exit(EXIT_FAILURE);}
+ if (ferror(outfile)) {perror("chk_err");   exit(EXIT_FAILURE);}
+}
+
+/******************************************************************************/
+
+LOCAL void chkparam P_((void));
+LOCAL void chkparam ()
+{
+ if ((TB_WIDTH != 2) && (TB_WIDTH != 4))
+    chk_err("chkparam: Width parameter is illegal.");
+ if ((TB_WIDTH == 2) && (TB_POLY & 0xFFFF0000L))
+    chk_err("chkparam: Poly parameter is too wide.");
+ if ((TB_REVER != FALSE) && (TB_REVER != TRUE))
+    chk_err("chkparam: Reverse parameter is not boolean.");
+}
+
+/******************************************************************************/
+
+LOCAL void gentable P_((void));
+LOCAL void gentable ()
+{
+ WR("/*****************************************************************/\n");
+ WR("/*                                                               */\n");
+ WR("/* CRC LOOKUP TABLE                                              */\n");
+ WR("/* ================                                              */\n");
+ WR("/* The following CRC lookup table was generated automagically    */\n");
+ WR("/* by the Rocksoft^tm Model CRC Algorithm Table Generation       */\n");
+ WR("/* Program V1.0 using the following model parameters:            */\n");
+ WR("/*                                                               */\n");
+ WP("/*    Width   : %1lu bytes.                                         */\n",
+    (ulong) TB_WIDTH);
+ if (TB_WIDTH == 2)
+ WP("/*    Poly    : 0x%04lX                                           */\n",
+    (ulong) TB_POLY);
+ else
+ WP("/*    Poly    : 0x%08lXL                                      */\n",
+    (ulong) TB_POLY);
+ if (TB_REVER)
+ WR("/*    Reverse : TRUE.                                            */\n");
+ else
+ WR("/*    Reverse : FALSE.                                           */\n");
+ WR("/*                                                               */\n");
+ WR("/* For more information on the Rocksoft^tm Model CRC Algorithm,  */\n");
+ WR("/* see the document titled \"A Painless Guide to CRC Error        */\n");
+ WR("/* Detection Algorithms\" by Ross Williams                        */\n");
+ WR("/* (ross@guest.adelaide.edu.au.). This document is likely to be  */\n");
+ WR("/* in the FTP archive \"ftp.adelaide.edu.au/pub/rocksoft\".        */\n");
+ WR("/*                                                               */\n");
+ WR("/*****************************************************************/\n");
+ WR("\n");
+ switch (TB_WIDTH)
+   {
+    case 2: WR("unsigned short crctable[256] =\n{\n"); break;
+    case 4: WR("unsigned long  crctable[256] =\n{\n"); break;
+    default: chk_err("gentable: TB_WIDTH is invalid.");
+   }
+ chk_err("");
+
+ {
+  int i;
+  cm_t cm;
+  char *form    = (TB_WIDTH==2) ? "0x%04lX" : "0x%08lXL";
+  int   perline = (TB_WIDTH==2) ? 8 : 4;
+
+  cm.cm_width = TB_WIDTH*8;
+  cm.cm_poly  = TB_POLY;
+  cm.cm_refin = TB_REVER;
+
+  for (i=0; i<256; i++)
+    {
+     WR(" ");
+     WP(form,(ulong) cm_tab(&cm,i));
+     if (i != 255) WR(",");
+     if (((i+1) % perline) == 0) WR("\n");
+     chk_err("");
+    }
+
+ WR("};\n");
+ WR("\n");
+ WR("/*****************************************************************/\n");
+ WR("/*                   End of CRC Lookup Table                     */\n");
+ WR("/*****************************************************************/\n");
+ WR("");
+ chk_err("");
+}
+}
+
+/******************************************************************************/
+
+main ()
+{
+ printf("\n");
+ printf("Rocksoft^tm Model CRC Algorithm Table Generation Program V1.0\n");
+ printf("-------------------------------------------------------------\n");
+ printf("Output file is \"%s\".\n",TB_FILE);
+ chkparam();
+ outfile = fopen(TB_FILE,"w"); chk_err("");
+ gentable();
+ if (fclose(outfile) != 0)
+    chk_err("main: Couldn't close output file.");
+ printf("\nSUCCESS: The table has been successfully written.\n");
+}
+
+/******************************************************************************/
+/*                             End of crctable.c                              */
+/******************************************************************************/
+
+20. Summary
+-----------
+This document has provided a detailed explanation of CRC algorithms
+explaining their theory and stepping through increasingly
+sophisticated implementations ranging from simple bit shifting through
+to byte-at-a-time table-driven implementations. The various
+implementations of different CRC algorithms that make them confusing
+to deal with have been explained. A parameterized model algorithm has
+been described that can be used to precisely define a particular CRC
+algorithm, and a reference implementation provided. Finally, a program
+to generate CRC tables has been provided.
+
+21. Corrections
+---------------
+If you think that any part of this document is unclear or incorrect,
+or have any other information, or suggestions on how this document
+could be improved, please context the author. In particular, I would
+like to hear from anyone who can provide Rocksoft^tm Model CRC
+Algorithm parameters for standard algorithms out there.
+
+A. Glossary
+-----------
+CHECKSUM - A number that has been calculated as a function of some
+message. The literal interpretation of this word "Check-Sum" indicates
+that the function should involve simply adding up the bytes in the
+message. Perhaps this was what early checksums were. Today, however,
+although more sophisticated formulae are used, the term "checksum" is
+still used.
+
+CRC - This stands for "Cyclic Redundancy Code". Whereas the term
+"checksum" seems to be used to refer to any non-cryptographic checking
+information unit, the term "CRC" seems to be reserved only for
+algorithms that are based on the "polynomial" division idea.
+
+G - This symbol is used in this document to represent the Poly.
+
+MESSAGE - The input data being checksummed. This is usually structured
+as a sequence of bytes. Whether the top bit or the bottom bit of each
+byte is treated as the most significant or least significant is a
+parameter of CRC algorithms.
+
+POLY - This is my friendly term for the polynomial of a CRC.
+
+POLYNOMIAL - The "polynomial" of a CRC algorithm is simply the divisor
+in the division implementing the CRC algorithm.
+
+REFLECT - A binary number is reflected by swapping all of its bits
+around the central point. For example, 1101 is the reflection of 1011.
+
+ROCKSOFT^TM MODEL CRC ALGORITHM - A parameterized algorithm whose
+purpose is to act as a solid reference for describing CRC algorithms.
+Typically CRC algorithms are specified by quoting a polynomial.
+However, in order to construct a precise implementation, one also
+needs to know initialization values and so on.
+
+WIDTH - The width of a CRC algorithm is the width of its polynomical
+minus one. For example, if the polynomial is 11010, the width would be
+4 bits. The width is usually set to be a multiple of 8 bits.
+
+B. References
+-------------
+[Griffiths87] Griffiths, G., Carlyle Stones, G., "The Tea-Leaf Reader
+Algorithm: An Efficient Implementation of CRC-16 and CRC-32",
+Communications of the ACM, 30(7), pp.617-620. Comment: This paper
+describes a high-speed table-driven implementation of CRC algorithms.
+The technique seems to be a touch messy, and is superceded by the
+Sarwete algorithm.
+
+[Knuth81] Knuth, D.E., "The Art of Computer Programming", Volume 2:
+Seminumerical Algorithms, Section 4.6.
+
+[Nelson 91] Nelson, M., "The Data Compression Book", M&T Books, (501
+Galveston Drive, Redwood City, CA 94063), 1991, ISBN: 1-55851-214-4.
+Comment: If you want to see a real implementation of a real 32-bit
+checksum algorithm, look on pages 440, and 446-448.
+
+[Sarwate88] Sarwate, D.V., "Computation of Cyclic Redundancy Checks
+via Table Look-Up", Communications of the ACM, 31(8), pp.1008-1013.
+Comment: This paper describes a high-speed table-driven implementation
+for CRC algorithms that is superior to the tea-leaf algorithm.
+Although this paper describes the technique used by most modern CRC
+implementations, I found the appendix of this paper (where all the
+good stuff is) difficult to understand.
+
+[Tanenbaum81] Tanenbaum, A.S., "Computer Networks", Prentice Hall,
+1981, ISBN: 0-13-164699-0. Comment: Section 3.5.3 on pages 128 to 132
+provides a very clear description of CRC codes. However, it does not
+describe table-driven implementation techniques.
+
+
+C. References I Have Detected But Haven't Yet Sighted
+-----------------------------------------------------
+Boudreau, Steen, "Cyclic Redundancy Checking by Program," AFIPS
+Proceedings, Vol. 39, 1971.
+
+Davies, Barber, "Computer Networks and Their Protocols," J. Wiley &
+Sons, 1979.
+
+Higginson, Kirstein, "On the Computation of Cyclic Redundancy Checks
+by Program," The Computer Journal (British), Vol. 16, No. 1, Feb 1973.
+
+McNamara, J. E., "Technical Aspects of Data Communication," 2nd
+Edition, Digital Press, Bedford, Massachusetts, 1982.
+
+Marton and Frambs, "A Cyclic Redundancy Checking (CRC) Algorithm,"
+Honeywell Computer Journal, Vol. 5, No. 3, 1971.
+
+Nelson M., "File verification using CRC", Dr Dobbs Journal, May 1992,
+pp.64-67.
+
+Ramabadran T.V., Gaitonde S.S., "A tutorial on CRC computations", IEEE
+Micro, Aug 1988.
+
+Schwaderer W.D., "CRC Calculation", April 85 PC Tech Journal,
+pp.118-133.
+
+Ward R.K, Tabandeh M., "Error Correction and Detection, A Geometric
+Approach" The Computer Journal, Vol. 27, No. 3, 1984, pp.246-253.
+
+Wecker, S., "A Table-Lookup Algorithm for Software Computation of
+Cyclic Redundancy Check (CRC)," Digital Equipment Corporation
+memorandum, 1974.
+
+--<End of Document>--

@@ -1,0 +1,8 @@
+Server IP:127.0.0.1
+Server Port:4000
+Client Port:2001
+File Name:Checksum.txt
+Packet Size:100
+ServerTimeout:3
+ACK number to drop:18
+ACK number to corrupt:8
